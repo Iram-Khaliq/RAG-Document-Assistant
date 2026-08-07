@@ -4,7 +4,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 import shutil
 import os
 
+from prompts import RAG_SYSTEM_PROMPT
 from config import client, collection
+
 
 app = FastAPI()
 
@@ -16,9 +18,9 @@ def home():
     }
 
 
-# ==========================================
+# ==================================================
 # Upload PDF
-# ==========================================
+# ==================================================
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -37,9 +39,8 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     text = ""
 
-    # Extract text from every page
+    # Extract text
     for page in reader.pages:
-
         extracted_text = page.extract_text()
 
         if extracted_text:
@@ -53,7 +54,23 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     chunks = text_splitter.split_text(text)
 
-    # Store chunks in ChromaDB
+    # -------------------------------------------------
+    # Clear previous document from ChromaDB
+    # -------------------------------------------------
+
+    try:
+        existing = collection.get()
+
+        if existing["ids"]:
+            collection.delete(ids=existing["ids"])
+
+    except Exception:
+        pass
+
+    # -------------------------------------------------
+    # Store chunks
+    # -------------------------------------------------
+
     for index, chunk in enumerate(chunks):
 
         response = client.embeddings.create(
@@ -75,9 +92,9 @@ async def upload_pdf(file: UploadFile = File(...)):
     }
 
 
-# ==========================================
+# ==================================================
 # Ask Question
-# ==========================================
+# ==================================================
 
 @app.post("/ask")
 async def ask_question(question: str):
@@ -93,27 +110,31 @@ async def ask_question(question: str):
     # Search ChromaDB
     results = collection.query(
         query_embeddings=[question_embedding],
-        n_results=3
+        n_results=5
     )
 
     # Combine retrieved chunks
     context = "\n".join(results["documents"][0])
 
+    # Debug
+    print("=" * 60)
+    print("Retrieved Context:\n")
+    print(context)
+    print("=" * 60)
+
     # Create prompt
     prompt = f"""
-You are an AI Assistant.
-
-Answer the user's question only from the provided context.
-
-If the answer is not available in the context, reply:
-
-"I don't know based on the uploaded document."
-
 Context:
 {context}
 
 Question:
 {question}
+
+Answer ONLY from the provided context.
+
+If the answer is not available in the context, reply:
+
+"I don't know based on the uploaded document."
 """
 
     # Ask ChatGPT
@@ -122,7 +143,7 @@ Question:
         messages=[
             {
                 "role": "system",
-                "content": "You answer questions only from the provided context."
+                "content": RAG_SYSTEM_PROMPT
             },
             {
                 "role": "user",
@@ -131,6 +152,7 @@ Question:
         ]
     )
 
+    # Get final answer
     answer = response.choices[0].message.content
 
     return {
